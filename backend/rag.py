@@ -35,19 +35,26 @@ class RAGPipeline:
     def __init__(self, config: Optional[RAGConfig] = None):
         self.config = config or RAGConfig()
 
+        # If the config asks for CUDA but there's no working CUDA build of
+        # torch, fall back to CPU instead of crashing on model load.
+        embed_device = self._resolve_device(self.config.embedding_device)
+        rerank_device = self._resolve_device(self.config.reranker_device)
+        embed_fp16 = self.config.embedding_use_fp16 and embed_device != "cpu"
+        rerank_fp16 = self.config.reranker_use_fp16 and rerank_device != "cpu"
+
         self.chunker = RecursiveChunker(
             chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap,
         )
         self.embedder = BGEEmbedder(
             model_name=self.config.embedding_model,
-            use_fp16=self.config.embedding_use_fp16,
-            device=self.config.embedding_device,
+            use_fp16=embed_fp16,
+            device=embed_device,
         )
         self.reranker = BGEReranker(
             model_name=self.config.reranker_model,
-            use_fp16=self.config.reranker_use_fp16,
-            device=self.config.reranker_device,
+            use_fp16=rerank_fp16,
+            device=rerank_device,
         )
         self.store = HybridStore(
             db_path=self.config.db_path,
@@ -90,10 +97,36 @@ class RAGPipeline:
         self.store.add(records)
         return len(records)
 
+    @staticmethod
+    def _resolve_device(device: str) -> str:
+        if device.startswith("cuda"):
+            try:
+                import torch
+
+                if not torch.cuda.is_available():
+                    print(
+                        f"[warn] device '{device}' requested but CUDA is not "
+                        f"available; falling back to CPU. Install a CUDA build "
+                        f"of torch for GPU acceleration.",
+                        file=__import__("sys").stderr,
+                    )
+                    return "cpu"
+            except ImportError:
+                return "cpu"
+        return device
+
+    # Extensions we know how to read.
+    SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".txt", ".md", ".csv"}
+
     def ingest_file(self, file_path: str) -> int:
         path = Path(file_path)
-        if path.suffix.lower() == ".pdf":
+        suffix = path.suffix.lower()
+        if suffix == ".pdf":
             text = self._read_pdf(path)
+        elif suffix in (".xlsx", ".xls"):
+            text = self._read_excel(path)
+        elif suffix == ".csv":
+            text = self._read_csv(path)
         else:
             text = path.read_text(encoding="utf-8", errors="ignore")
         return self.ingest_text(
@@ -104,15 +137,60 @@ class RAGPipeline:
 
     @staticmethod
     def _read_pdf(path: Path) -> str:
-        from pypdf import PdfReader
+        # PyMuPDF (fitz) is ~5-10x faster than pypdf on large PDFs. Fall back
+        # to pypdf if it isn't installed.
+        try:
+            import fitz  # PyMuPDF
 
-        reader = PdfReader(str(path))
-        pages = [(page.extract_text() or "") for page in reader.pages]
-        return "\n\n".join(pages)
+            doc = fitz.open(str(path))
+            pages = [page.get_text() for page in doc]
+            doc.close()
+            return "\n\n".join(pages)
+        except ImportError:
+            from pypdf import PdfReader
+
+            reader = PdfReader(str(path))
+            pages = [(page.extract_text() or "") for page in reader.pages]
+            return "\n\n".join(pages)
+
+    @staticmethod
+    def _read_excel(path: Path) -> str:
+        """Flatten every sheet to text: 'col: value | col: value' per row."""
+        import pandas as pd
+
+        sheets = pd.read_excel(path, sheet_name=None, dtype=str, engine=None)
+        parts: List[str] = []
+        for sheet_name, df in sheets.items():
+            df = df.fillna("")
+            parts.append(f"### Sheet: {sheet_name}")
+            for _, row in df.iterrows():
+                cells = [f"{col}: {val}" for col, val in row.items() if str(val).strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        return "\n".join(parts)
+
+    @staticmethod
+    def _read_csv(path: Path) -> str:
+        import pandas as pd
+
+        df = pd.read_csv(path, dtype=str).fillna("")
+        rows = [
+            " | ".join(f"{col}: {val}" for col, val in row.items() if str(val).strip())
+            for _, row in df.iterrows()
+        ]
+        return "\n".join(rows)
 
     def build_indexes(self) -> None:
-        """Call once after ingesting all documents to enable BM25 search."""
+        """
+        Call once after ingesting all documents. Builds:
+          * the BM25 (FTS) index for keyword search, and
+          * an ANN vector index for fast semantic search on large corpora.
+        """
         self.store.build_fts_index("text")
+        built = self.store.build_vector_index()
+        if not built:
+            print("[info] Skipped ANN vector index (too few rows; brute-force "
+                  "search is fine at this size).")
 
     # ---------- Retrieval ----------
 

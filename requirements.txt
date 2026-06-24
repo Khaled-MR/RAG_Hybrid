@@ -3,5 +3,18 @@ pyarrow>=15.0.0
 FlagEmbedding>=1.2.10
 ollama>=0.3.0
 numpy>=1.24.0
-# torch is pulled in by FlagEmbedding. If you need a specific CUDA build,
-# install it manually first from https://pytorch.org/get-started/locally/
+pypdf>=4.0.0
+pandas>=2.0.0
+openpyxl>=3.1.0        # required by pandas to read .xlsx
+PyMuPDF>=1.24.0        # fast PDF text extraction (falls back to pypdf if absent)
+pylance>=0.10.0        # projected scans (cheap distinct-source counts at scale)
+
+# --- Web API (backend/api.py) ---
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9   # file uploads
+
+# torch is pulled in by FlagEmbedding as a CPU build. For GPU (required for
+# fast ingestion of large batches) install a CUDA build that matches your GPU.
+# RTX 50-series (Blackwell) needs CUDA 12.8+:
+#   pip install --force-reinstall --index-url https://download.pytorch.org/whl/cu128 torch

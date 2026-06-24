@@ -90,25 +90,45 @@ pip install pypdf "transformers>=4.44.2,<5.0"
 
 ## خطوات التشغيل (Run)
 
-### 1) إدخال المستندات (Ingestion)
+### 1) إدخال المستندات (Ingestion) — "بس حط الملفات"
+
+أبسط طريقة (مناسبة لعشرات الآلاف من الملفات):
 
 ```powershell
-# ملف PDF (مدعوم عبر pypdf)
-.\.venv\Scripts\python.exe ingest.py "SQL.pdf"
-
-# مجلد كامل من ملفات نصية
-.\.venv\Scripts\python.exe ingest.py .\my_docs --ext .txt,.md
+# 1. حط كل ملفاتك (PDF / Excel / نصوص) جوه فولدر  backend/data/
+# 2. من جوه فولدر backend شغّل من غير أي arguments:
+cd backend
+..\.venv\Scripts\python.exe ingest.py
 ```
-بيقسّم المستند لـ chunks، يعمل embedding، يخزّنهم في LanceDB، ويبني فهرس BM25.
+
+بيمشي على `data/` بالكامل (recursively) ويدخّل كل الأنواع المدعومة
+(`.pdf .xlsx .xls .csv .txt .md`)، يقسّمهم chunks، يعمل embedding على
+الـ GPU، يخزّنهم في LanceDB، وفي الآخر يبني فهرس BM25.
+
+**مهم لـ 43 ألف ملف:**
+- **قابل للاستئناف (Resumable):** بيحتفظ بـ manifest للملفات الخلصانة. لو
+  العملية وقفت (Ctrl-C أو crash)، شغّل نفس الأمر تاني وهيكمّل من حيث وقف.
+- **عزل الأخطاء:** ملف PDF واحد باظ مش هيوقف الباقي — الفشل بيتسجّل في
+  `ingest_errors.log` والملف بيتعدّى.
+- **تقدّم + ETA** بيتطبع أول بأول.
+
+أوامر إضافية (من جوه فولدر `backend`):
+```powershell
+..\.venv\Scripts\python.exe ingest.py "C:\path\to\file.pdf"   # ملف واحد
+..\.venv\Scripts\python.exe ingest.py "D:\my_docs"            # فولدر معيّن
+..\.venv\Scripts\python.exe ingest.py --ext .pdf,.xlsx        # أنواع محددة بس
+..\.venv\Scripts\python.exe ingest.py --reset-manifest        # إعادة إدخال الكل
+```
 
 ### 2) السؤال (Query)
 
 ```powershell
+cd backend
 # سؤال واحد
-.\.venv\Scripts\python.exe query.py "What is a primary key in SQL?"
+..\.venv\Scripts\python.exe query.py "What is a primary key in SQL?"
 
 # وضع تفاعلي (أسرع — الموديلات بتتحمّل مرة واحدة)
-.\.venv\Scripts\python.exe query.py -i
+..\.venv\Scripts\python.exe query.py -i
 ```
 
 ### 3) الاختبار من الكود (Test harness)
@@ -116,11 +136,12 @@ pip install pypdf "transformers>=4.44.2,<5.0"
 [test_rag.py](test_rag.py) بيحمّل الـ pipeline مرة واحدة ويشغّل قايمة أسئلة:
 
 ```powershell
+cd backend
 # يجرب قايمة الأسئلة اللي جوه السكربت
-.\.venv\Scripts\python.exe test_rag.py
+..\.venv\Scripts\python.exe test_rag.py
 
 # أو سؤال واحد من سطر الأوامر
-.\.venv\Scripts\python.exe test_rag.py "What is a foreign key?"
+..\.venv\Scripts\python.exe test_rag.py "What is a foreign key?"
 ```
 لتجربة أسئلتك الخاصة، عدّل الـ `QUESTIONS` list في أول [test_rag.py](test_rag.py).
 
@@ -143,19 +164,36 @@ for src in result["sources"]:
     print(src["source"], src["rerank_score"])
 ```
 
-## Hardware notes (RTX 4070 laptop, 8 GB VRAM)
+## Hardware notes (RTX 5060 Ti, 16 GB VRAM)
 
-Memory budget with defaults (Qwen 14B + BGE-M3 on GPU, reranker on CPU):
+`config.py` now runs the embedder **and** reranker on the GPU (`cuda`, fp16).
+16 GB fits all three components at once:
 
 | Component            | VRAM      |
 |----------------------|-----------|
 | BGE-M3 (fp16)        | ~1.2 GB   |
-| Qwen 2.5 14B (Q4_K_M)| ~9 GB     |
-| Reranker (CPU)       | 0 GB VRAM |
+| Reranker (fp16)      | ~0.6 GB   |
+| Qwen 2.5 7B (Q4_K_M) | ~5 GB     |
 
-14B at Q4 is borderline on 8 GB. If you see Ollama offloading to CPU and
-generation gets slow, drop to `qwen2.5:7b` in `config.py`. Quality stays
-high because the reranker already filtered the context heavily.
+### GPU torch (required for fast ingestion)
+
+The default `pip install` gives a **CPU-only** torch. The RTX 50-series
+(Blackwell) needs a **CUDA 12.8** build:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install --no-deps `
+  --index-url https://download.pytorch.org/whl/cu128 "torch==2.11.0+cu128"
+```
+
+Verify it took:
+
+```powershell
+.\.venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available())"
+# -> True
+```
+
+If it prints `False`, ingestion still works but falls back to CPU (much
+slower). Set `embedding_device="cpu"` in `config.py` to silence CUDA errors.
 
 ## Tuning knobs (in `config.py`)
 
@@ -199,16 +237,52 @@ not generation.
 
 ```
 rag/
-├── config.py         # All knobs in one place
-├── chunking.py       # Recursive chunker with Arabic/English separators
-├── embeddings.py     # BGE-M3 wrapper
-├── reranker.py       # BGE-reranker-v2-m3 wrapper
-├── vector_store.py   # LanceDB + hybrid search + RRF fusion
-├── llm.py            # Ollama client + RAG prompt template
-├── rag.py            # Pipeline that wires everything together (PDF/txt/md ingest)
-├── ingest.py         # CLI: ingest files
-├── query.py          # CLI: ask questions
-├── test_rag.py       # Test harness: load once, run a batch of questions
+├── backend/              # كل ملفات الـ RAG (Python) + الـ API
+│   ├── config.py         # All knobs in one place
+│   ├── chunking.py       # Recursive chunker with Arabic/English separators
+│   ├── embeddings.py     # BGE-M3 wrapper
+│   ├── reranker.py       # BGE-reranker-v2-m3 wrapper
+│   ├── vector_store.py   # LanceDB + hybrid search + RRF fusion
+│   ├── llm.py            # Ollama client + RAG prompt template
+│   ├── rag.py            # Pipeline (PDF / xlsx / csv / txt / md ingest)
+│   ├── ingest.py         # CLI: bulk-ingest (resumable, for 43k+ files)
+│   ├── query.py          # CLI: ask questions
+│   ├── api.py            # FastAPI server for the web UI
+│   ├── test_rag.py       # Test harness
+│   ├── data/             # ← drop your files here (PDF/Excel/...)
+│   └── lancedb/          # the vector DB (auto-created)
+├── frontend/             # واجهة الويب (React + Vite + Tailwind + shadcn)
+│   └── src/
+│       ├── App.tsx                    # the chat + upload UI
+│       ├── lib/api.ts                 # calls the backend
+│       └── components/ui/ai-prompt-box.tsx
 ├── requirements.txt
 └── README.md
 ```
+
+## 🌐 الواجهة (Web UI)
+
+واجهة ويب: حد يرفع ملفات أو يسأل سؤال ويشوف الرد مع المصادر.
+
+**شغّل الاتنين في تيرمينالين منفصلين:**
+
+```powershell
+# Terminal 1 — الـ backend (API على بورت 8000)
+cd backend
+..\.venv\Scripts\
+
+# Terminal 2 — الـ frontend (على بورت 5173)
+cd frontend
+npm install      # أول مرة بس
+npm run dev
+```
+
+بعدين افتح **http://localhost:5173** في المتصفح.
+
+- **زرار "Add documents"** (أو اسحب وأفلت أي ملف على الصفحة) → بيرفع الملف،
+  يعمله ingest، ويبني الفهارس. يدعم PDF / Excel / CSV / TXT / MD.
+- **اكتب سؤالك** في صندوق الإدخال تحت → بيرجّع الإجابة + المصادر مع نسبة
+  التطابق (rerank score).
+
+> الـ Vite عنده proxy بيوصّل `/api/*` للـ backend تلقائياً، فمفيش إعداد CORS
+> مطلوب منك.

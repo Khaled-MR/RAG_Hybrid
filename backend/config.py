@@ -1,37 +1,49 @@
 """
 Central configuration for the RAG pipeline.
 
-Defaults are tuned for an RTX 4070 laptop (8GB VRAM).
-The reranker is placed on CPU by default so the LLM can use the GPU freely.
+Defaults are tuned for an RTX 5060 Ti (16 GB VRAM). Embedder + reranker both
+run on the GPU; the LLM runs in Ollama (also GPU). 16 GB is plenty for all
+three at once.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# Absolute path to this backend folder, so paths work no matter what the
+# current working directory is (CLI from root, API launched elsewhere, etc).
+_BACKEND_DIR = Path(__file__).resolve().parent
 
 
 @dataclass
 class RAGConfig:
-   
+
     embedding_model: str = "BAAI/bge-m3"
     embedding_dim: int = 1024
-    embedding_device: str = "cpu"          # torch in this venv is CPU-only; use "cuda" if you install a CUDA build
-    embedding_use_fp16: bool = False       # fp16 only helps on GPU
-    embedding_batch_size: int = 16
+    embedding_device: str = "cuda"         # set to "cpu" if no CUDA build of torch
+    embedding_use_fp16: bool = True        # fp16 ~halves VRAM, faster on GPU
+    embedding_batch_size: int = 64         # 16 GB can handle large batches
 
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
-    reranker_device: str = "cpu"            
-    reranker_use_fp16: bool = False         
+    reranker_device: str = "cuda"
+    reranker_use_fp16: bool = True
 
-    chunk_size: int = 500                  
+    chunk_size: int = 500
     chunk_overlap: int = 80
 
-    db_path: str = "./lancedb"
+    db_path: str = str(_BACKEND_DIR / "lancedb")
     table_name: str = "documents"
 
-    initial_top_k: int = 20                
-    final_top_k: int = 5                  
-    vector_weight: float = 0.5            
+    # Folder you drop your files into. `python ingest.py` ingests everything
+    # under here (recursively) with no extra arguments.
+    data_dir: str = str(_BACKEND_DIR / "data")
+    # File types picked up automatically when ingesting a folder.
+    ingest_extensions: str = ".pdf,.xlsx,.xls,.txt,.md"
+
+    initial_top_k: int = 20
+    final_top_k: int = 5
+    vector_weight: float = 0.5
     bm25_weight: float = 0.5
-    rrf_k: int = 60                        
+    rrf_k: int = 60
 
     ollama_base_url: str = "http://localhost:11434"
     llm_model: str = "qwen2.5:7b"

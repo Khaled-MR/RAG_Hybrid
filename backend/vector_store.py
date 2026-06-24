@@ -47,6 +47,34 @@ class HybridStore:
             self.create_or_open()
         self.table.create_fts_index(field, replace=True)
 
+    def build_vector_index(self) -> bool:
+        """
+        Build an ANN (IVF_PQ) index on the vector column for fast search.
+
+        Without this, LanceDB does an exact brute-force scan of every row —
+        fine for a few thousand chunks, far too slow for the millions you get
+        from tens of thousands of documents. Needs a few hundred rows to be
+        worthwhile; returns False (and skips) below that threshold.
+        """
+        if self.table is None:
+            self.create_or_open()
+        try:
+            n = self.table.count_rows()
+        except Exception:
+            n = 0
+        if n < 256:
+            return False
+        # num_partitions ~ sqrt(n) is a good default; cap so small sets work.
+        num_partitions = max(1, min(int(n ** 0.5), 4096))
+        self.table.create_index(
+            vector_column_name="vector",
+            metric="cosine",
+            num_partitions=num_partitions,
+            num_sub_vectors=64,   # 1024-dim / 64 = 16 dims per subvector
+            replace=True,
+        )
+        return True
+
     # --- individual retrievers ---
 
     def vector_search(self, query_vector: np.ndarray, top_k: int = 20) -> List[Dict]:

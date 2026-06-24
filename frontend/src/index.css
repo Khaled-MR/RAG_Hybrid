@@ -1,0 +1,34 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background-color: #131316;
+    color: #e5e7eb;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Thin scrollbars for the chat area */
+.rag-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.rag-scroll::-webkit-scrollbar-thumb {
+  background-color: #3a3a40;
+  border-radius: 4px;
+}
+.rag-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
