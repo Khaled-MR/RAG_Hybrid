@@ -2,3 +2,10 @@
 __pycache__/
 lancedb/
 ingest_errors.log
+
+# runtime logs
+*.log
+
+# node
+node_modules/
+dist/
