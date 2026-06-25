@@ -39,8 +39,8 @@ class RAGConfig:
     # File types picked up automatically when ingesting a folder.
     ingest_extensions: str = ".pdf,.xlsx,.xls,.txt,.md"
 
-    initial_top_k: int = 20
-    final_top_k: int = 5
+    initial_top_k: int = 40      # wider recall — GPU reranker handles it fast
+    final_top_k: int = 6         # a bit more context for richer answers
     vector_weight: float = 0.5
     bm25_weight: float = 0.5
     rrf_k: int = 60
