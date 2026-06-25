@@ -1,7 +1,7 @@
 import React from "react";
 import { Upload, Loader2, FileText, AlertCircle, ChevronDown, Database } from "lucide-react";
 import { PromptInputBox } from "@/components/ui/ai-prompt-box";
-import { ask, uploadFiles, getStats, type Source, type Stats } from "@/lib/api";
+import { askStream, uploadFiles, getStats, type Source, type Stats } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 const DOC_EXTENSIONS = ".pdf,.xlsx,.xls,.csv,.txt,.md";
@@ -65,19 +65,27 @@ export default function App() {
     const q = question.trim();
     if (!q || isAsking) return;
 
-    setMessages((m) => [...m, { id: uid(), role: "user", content: q }]);
+    const answerId = uid();
+    setMessages((m) => [
+      ...m,
+      { id: uid(), role: "user", content: q },
+      { id: answerId, role: "assistant", content: "" },
+    ]);
     setIsAsking(true);
+
+    const patch = (fields: Partial<Message>) =>
+      setMessages((m) => m.map((msg) => (msg.id === answerId ? { ...msg, ...fields } : msg)));
+
     try {
-      const res = await ask(q);
-      setMessages((m) => [
-        ...m,
-        { id: uid(), role: "assistant", content: res.answer, sources: res.sources, elapsed: res.elapsed },
-      ]);
+      await askStream(q, {
+        onSources: (sources) => patch({ sources }),
+        onDelta: (text) => setMessages((m) =>
+          m.map((msg) => (msg.id === answerId ? { ...msg, content: msg.content + text } : msg))
+        ),
+        onDone: (elapsed) => patch({ elapsed }),
+      });
     } catch (err) {
-      setMessages((m) => [
-        ...m,
-        { id: uid(), role: "assistant", content: `Couldn't get an answer: ${(err as Error).message}`, error: true },
-      ]);
+      patch({ content: `Couldn't get an answer: ${(err as Error).message}`, error: true });
     } finally {
       setIsAsking(false);
     }
@@ -141,7 +149,6 @@ export default function App() {
             {messages.map((m) => (
               <MessageBubble key={m.id} message={m} />
             ))}
-            {isAsking && <ThinkingBubble />}
           </div>
         </div>
       )}
@@ -239,6 +246,7 @@ function MessageBubble({ message }: { message: Message }) {
       </div>
     );
   }
+  const pending = !message.content && !message.error;
   return (
     <div className="flex flex-col gap-2">
       <div
@@ -249,7 +257,14 @@ function MessageBubble({ message }: { message: Message }) {
             : "border-white/10 bg-[#1F2023]/85 text-gray-100"
         )}
       >
-        {message.content}
+        {pending ? (
+          <span className="flex items-center gap-2 text-gray-300">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            <span className="text-sm">Searching documents &amp; generating…</span>
+          </span>
+        ) : (
+          message.content
+        )}
         {message.elapsed != null && (
           <span className="mt-2 block text-[11px] text-gray-400">answered in {message.elapsed.toFixed(1)}s</span>
         )}
@@ -295,11 +310,3 @@ function Sources({ sources }: { sources: Source[] }) {
   );
 }
 
-function ThinkingBubble() {
-  return (
-    <div className="flex w-fit items-center gap-2 rounded-2xl rounded-bl-md border border-white/10 bg-[#1F2023]/85 px-4 py-3 text-gray-300 backdrop-blur-md">
-      <Loader2 className="h-4 w-4 animate-spin" />
-      <span className="text-sm">Searching documents &amp; generating…</span>
-    </div>
-  );
-}

@@ -12,6 +12,7 @@ Run:
     (run from the backend/ folder, or:  uvicorn backend.api:app ...)
 """
 
+import json
 import shutil
 import sys
 import time
@@ -21,6 +22,7 @@ from typing import List
 
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 # Make sibling modules importable whether launched as `api:app` (cwd=backend)
@@ -120,6 +122,51 @@ def ask(req: AskRequest):
         for s in result.get("sources", [])
     ]
     return AskResponse(answer=result["answer"], sources=sources, elapsed=time.time() - t0)
+
+
+@app.post("/api/ask/stream")
+def ask_stream(req: AskRequest):
+    """
+    Stream the answer as it's generated. Emits newline-delimited JSON:
+      {"type":"sources","sources":[...]}   (once, first)
+      {"type":"delta","text":"..."}        (many)
+      {"type":"done","elapsed":1.23}       (once, last)
+      {"type":"error","detail":"..."}      (on failure)
+    """
+    question = (req.question or "").strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question is empty.")
+    rag = get_rag()
+
+    def gen():
+        t0 = time.time()
+        try:
+            retrieved = rag.retrieve(question)
+            sources = [
+                {
+                    "text": s.get("text", ""),
+                    "source": Path(s.get("source", "unknown")).name,
+                    "rerank_score": float(s.get("rerank_score", 0.0)),
+                }
+                for s in retrieved
+            ]
+            yield json.dumps({"type": "sources", "sources": sources}) + "\n"
+
+            contexts = [r["text"] for r in retrieved]
+            for chunk in rag.llm.generate_stream(
+                query=question,
+                contexts=contexts,
+                temperature=rag.config.temperature,
+                max_tokens=rag.config.max_tokens,
+            ):
+                yield json.dumps({"type": "delta", "text": chunk}) + "\n"
+
+            yield json.dumps({"type": "done", "elapsed": time.time() - t0}) + "\n"
+        except Exception as exc:
+            traceback.print_exc()
+            yield json.dumps({"type": "error", "detail": str(exc)}) + "\n"
+
+    return StreamingResponse(gen(), media_type="application/x-ndjson")
 
 
 @app.post("/api/upload")

@@ -6,7 +6,7 @@ documents) and calls Ollama. Defaults to Qwen 2.5 14B but any Ollama
 model works — just change `llm_model` in config.py.
 """
 
-from typing import List, Optional
+from typing import Iterator, List, Optional
 import ollama
 
 
@@ -25,9 +25,29 @@ DEFAULT_SYSTEM_PROMPT = (
 
 
 class OllamaLLM:
-    def __init__(self, model: str, base_url: str = "http://localhost:11434"):
+    def __init__(
+        self,
+        model: str,
+        base_url: str = "http://localhost:11434",
+        keep_alive: str = "30m",
+    ):
         self.client = ollama.Client(host=base_url)
         self.model = model
+        # Keep the model resident in VRAM between requests so we don't pay the
+        # 5-10s reload cost on every question.
+        self.keep_alive = keep_alive
+
+    def _build_messages(self, query: str, contexts: List[str], system: Optional[str]):
+        context_block = "\n\n---\n\n".join(
+            f"[{i + 1}] {ctx}" for i, ctx in enumerate(contexts)
+        ) or "(no context retrieved)"
+        return [
+            {"role": "system", "content": system or DEFAULT_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"Context documents:\n\n{context_block}\n\nQuestion: {query}",
+            },
+        ]
 
     def generate(
         self,
@@ -37,24 +57,37 @@ class OllamaLLM:
         max_tokens: int = 1024,
         system: Optional[str] = None,
     ) -> str:
-        context_block = "\n\n---\n\n".join(
-            f"[{i + 1}] {ctx}" for i, ctx in enumerate(contexts)
-        ) or "(no context retrieved)"
-
-        messages = [
-            {"role": "system", "content": system or DEFAULT_SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": f"Context documents:\n\n{context_block}\n\nQuestion: {query}",
-            },
-        ]
-
         response = self.client.chat(
             model=self.model,
-            messages=messages,
+            messages=self._build_messages(query, contexts, system),
+            keep_alive=self.keep_alive,
             options={
                 "temperature": temperature,
                 "num_predict": max_tokens,
             },
         )
         return response["message"]["content"]
+
+    def generate_stream(
+        self,
+        query: str,
+        contexts: List[str],
+        temperature: float = 0.1,
+        max_tokens: int = 1024,
+        system: Optional[str] = None,
+    ) -> Iterator[str]:
+        """Yield answer text chunks as Ollama produces them."""
+        stream = self.client.chat(
+            model=self.model,
+            messages=self._build_messages(query, contexts, system),
+            keep_alive=self.keep_alive,
+            stream=True,
+            options={
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        )
+        for part in stream:
+            chunk = part.get("message", {}).get("content", "")
+            if chunk:
+                yield chunk

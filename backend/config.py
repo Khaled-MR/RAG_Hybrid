@@ -49,3 +49,6 @@ class RAGConfig:
     llm_model: str = "qwen2.5:7b"
     temperature: float = 0.1
     max_tokens: int = 1024
+    # Keep the model loaded in VRAM between questions ("0" = unload immediately,
+    # "30m" = 30 min, "-1" = forever). Avoids a 5-10s reload per question.
+    llm_keep_alive: str = "30m"

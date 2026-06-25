@@ -65,6 +65,7 @@ class RAGPipeline:
         self.llm = OllamaLLM(
             model=self.config.llm_model,
             base_url=self.config.ollama_base_url,
+            keep_alive=self.config.llm_keep_alive,
         )
 
     

@@ -47,6 +47,57 @@ export async function ask(question: string): Promise<AskResponse> {
   return asJson<AskResponse>(res);
 }
 
+export interface StreamHandlers {
+  onSources?: (sources: Source[]) => void;
+  onDelta?: (text: string) => void;
+  onDone?: (elapsed: number) => void;
+}
+
+/**
+ * Ask with a streamed answer. Reads newline-delimited JSON from the backend
+ * and invokes the handlers as events arrive. Resolves when the stream ends.
+ */
+export async function askStream(question: string, handlers: StreamHandlers): Promise<void> {
+  const res = await fetch("/api/ask/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question }),
+  });
+  if (!res.ok || !res.body) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).detail || detail;
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const handleLine = (line: string) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    const evt = JSON.parse(trimmed);
+    if (evt.type === "sources") handlers.onSources?.(evt.sources);
+    else if (evt.type === "delta") handlers.onDelta?.(evt.text);
+    else if (evt.type === "done") handlers.onDone?.(evt.elapsed);
+    else if (evt.type === "error") throw new Error(evt.detail);
+  };
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? ""; // keep the last partial line
+    for (const line of lines) handleLine(line);
+  }
+  if (buffer.trim()) handleLine(buffer);
+}
+
 export async function uploadFiles(files: File[]): Promise<UploadResult> {
   const form = new FormData();
   files.forEach((f) => form.append("files", f));
