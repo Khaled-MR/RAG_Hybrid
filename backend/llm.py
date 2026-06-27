@@ -30,12 +30,14 @@ class OllamaLLM:
         model: str,
         base_url: str = "http://localhost:11434",
         keep_alive: str = "30m",
+        num_ctx: int = 4096,
     ):
         self.client = ollama.Client(host=base_url)
         self.model = model
         # Keep the model resident in VRAM between requests so we don't pay the
         # 5-10s reload cost on every question.
         self.keep_alive = keep_alive
+        self.num_ctx = num_ctx
 
     def _build_messages(self, query: str, contexts: List[str], system: Optional[str]):
         context_block = "\n\n---\n\n".join(
@@ -64,6 +66,7 @@ class OllamaLLM:
             options={
                 "temperature": temperature,
                 "num_predict": max_tokens,
+                "num_ctx": self.num_ctx,
             },
         )
         return response["message"]["content"]
@@ -85,6 +88,7 @@ class OllamaLLM:
             options={
                 "temperature": temperature,
                 "num_predict": max_tokens,
+                "num_ctx": self.num_ctx,
             },
         )
         for part in stream:

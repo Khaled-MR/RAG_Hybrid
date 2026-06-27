@@ -66,6 +66,7 @@ class RAGPipeline:
             model=self.config.llm_model,
             base_url=self.config.ollama_base_url,
             keep_alive=self.config.llm_keep_alive,
+            num_ctx=self.config.num_ctx,
         )
 
     
@@ -98,22 +99,44 @@ class RAGPipeline:
         self.store.add(records)
         return len(records)
 
+    # Below this much total VRAM, "auto" keeps the embedder/reranker on the CPU
+    # so the whole GPU is free for the LLM (which is the real bottleneck).
+    # Otherwise a 7-9B model + the two BGE models won't all fit and the LLM
+    # spills to CPU -> generation drops from ~80 tok/s to ~8 tok/s.
+    _AUTO_GPU_VRAM_GB = 10
+
     @staticmethod
     def _resolve_device(device: str) -> str:
-        if device.startswith("cuda"):
-            try:
-                import torch
+        import sys
 
-                if not torch.cuda.is_available():
-                    print(
-                        f"[warn] device '{device}' requested but CUDA is not "
-                        f"available; falling back to CPU. Install a CUDA build "
-                        f"of torch for GPU acceleration.",
-                        file=__import__("sys").stderr,
-                    )
-                    return "cpu"
-            except ImportError:
+        try:
+            import torch
+
+            cuda_ok = torch.cuda.is_available()
+        except ImportError:
+            cuda_ok = False
+
+        if device == "auto":
+            if not cuda_ok:
                 return "cpu"
+            vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+            if vram_gb < RAGPipeline._AUTO_GPU_VRAM_GB:
+                print(
+                    f"[info] {vram_gb:.0f}GB GPU detected — keeping embedder/"
+                    f"reranker on CPU so the LLM gets the full GPU.",
+                    file=sys.stderr,
+                )
+                return "cpu"
+            return "cuda"
+
+        if device.startswith("cuda") and not cuda_ok:
+            print(
+                "[warn] device 'cuda' requested but CUDA is not available; "
+                "falling back to CPU. Install a CUDA build of torch for GPU "
+                "acceleration.",
+                file=sys.stderr,
+            )
+            return "cpu"
         return device
 
     # Extensions we know how to read.

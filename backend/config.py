@@ -19,12 +19,14 @@ class RAGConfig:
 
     embedding_model: str = "BAAI/bge-m3"
     embedding_dim: int = 1024
-    embedding_device: str = "cuda"         # set to "cpu" if no CUDA build of torch
+    # "auto" = GPU only if the card has plenty of VRAM (>=10GB), else CPU so the
+    # LLM keeps the whole GPU. Force with "cuda" / "cpu".
+    embedding_device: str = "auto"
     embedding_use_fp16: bool = True        # fp16 ~halves VRAM, faster on GPU
     embedding_batch_size: int = 64         # 16 GB can handle large batches
 
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
-    reranker_device: str = "cuda"
+    reranker_device: str = "auto"
     reranker_use_fp16: bool = True
 
     chunk_size: int = 500
@@ -48,7 +50,10 @@ class RAGConfig:
     ollama_base_url: str = "http://localhost:11434"
     llm_model: str = "qwen2.5:7b"
     temperature: float = 0.1
-    max_tokens: int = 1024
+    max_tokens: int = 512        # cap on answer length; lower = faster generation
+    # Context window. Big enough for the prompt (~900 tok) + answer, small enough
+    # to not waste VRAM. Raise if you increase final_top_k or chunk_size a lot.
+    num_ctx: int = 4096
     # Keep the model loaded in VRAM between questions ("0" = unload immediately,
     # "30m" = 30 min, "-1" = forever). Avoids a 5-10s reload per question.
     llm_keep_alive: str = "30m"
