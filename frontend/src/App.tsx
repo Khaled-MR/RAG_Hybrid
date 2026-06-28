@@ -62,7 +62,14 @@ export default function App() {
   }, [messages, isAsking]);
 
   const handleAsk = async (question: string) => {
-    const q = question.trim();
+    // The prompt box can wrap input as "[Search: ...]" / "[Think: ...]" /
+    // "[Canvas: ...]" when those toggles are on. They have no meaning here and
+    // corrupt both the question and language detection — strip them off.
+    const q = question
+      .trim()
+      .replace(/^\[(?:Search|Think|Canvas):\s*/i, "")
+      .replace(/\]\s*$/, "")
+      .trim();
     if (!q || isAsking) return;
 
     const answerId = uid();

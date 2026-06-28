@@ -29,8 +29,11 @@ class RAGConfig:
     reranker_device: str = "auto"
     reranker_use_fp16: bool = True
 
-    chunk_size: int = 500
-    chunk_overlap: int = 80
+    # Larger chunks keep a whole article / section / clause together so it can
+    # be quoted verbatim and answered precisely. Structure-aware splitting
+    # (see chunking.py) keeps each "المادة N" / heading as its own chunk.
+    chunk_size: int = 900
+    chunk_overlap: int = 150
 
     db_path: str = str(_BACKEND_DIR / "lancedb")
     table_name: str = "documents"
@@ -48,12 +51,13 @@ class RAGConfig:
     rrf_k: int = 60
 
     ollama_base_url: str = "http://localhost:11434"
-    llm_model: str = "qwen2.5:7b"
-    temperature: float = 0.1
-    max_tokens: int = 512        # cap on answer length; lower = faster generation
+    llm_model: str = "llama3.1:latest"   # clean Arabic + stable grounding (benchmarked)
+    temperature: float = 0.0     # deterministic — least hallucination for factual QA
+    max_tokens: int = 4096        # cap on answer length; lower = faster generation
     # Context window. Big enough for the prompt (~900 tok) + answer, small enough
     # to not waste VRAM. Raise if you increase final_top_k or chunk_size a lot.
-    num_ctx: int = 4096
+    num_ctx: int = 8192
     # Keep the model loaded in VRAM between questions ("0" = unload immediately,
     # "30m" = 30 min, "-1" = forever). Avoids a 5-10s reload per question.
     llm_keep_alive: str = "30m"
+

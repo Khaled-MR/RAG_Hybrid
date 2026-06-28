@@ -1,5 +1,19 @@
 
+import re
 from typing import List
+
+# Strong structural boundaries. Each match starts a new segment so a whole
+# article / clause / section / heading stays together in its own chunk — which
+# is what lets the model quote it verbatim and answer "what is article 17"
+# precisely. Generic enough to leave plain prose untouched.
+_STRUCTURE_RE = re.compile(
+    r"(?m)^(?=\s*(?:"
+    r"#{1,6}\s+"                                                    # markdown heading
+    r"|(?:المادة|مادة|الفصل|الباب|الجزء|القسم|البند|بند)\s+[\d٠-٩]"  # Arabic article/section
+    r"|(?:Article|Section|Clause|Chapter|Part|Rule)\s+\d"            # English article/section
+    r"))",
+    re.IGNORECASE,
+)
 
 
 class RecursiveChunker:
@@ -33,9 +47,29 @@ class RecursiveChunker:
         self.separators = separators or self.DEFAULT_SEPARATORS
 
     def split_text(self, text: str) -> List[str]:
-        raw_chunks: List[str] = []
-        self._split(text, self.separators, raw_chunks)
-        return self._apply_overlap(raw_chunks)
+        # First split on structural boundaries (articles/sections/headings) so
+        # each one becomes its own chunk; then sub-split only the long ones.
+        result: List[str] = []
+        for segment in self._structural_split(text):
+            raw: List[str] = []
+            self._split(segment, self.separators, raw)
+            result.extend(self._apply_overlap(raw))
+        return [c for c in result if c.strip()]
+
+    def _structural_split(self, text: str) -> List[str]:
+        """Split at article/section/heading starts, keeping the heading text."""
+        starts = [m.start() for m in _STRUCTURE_RE.finditer(text)]
+        if len(starts) < 2:
+            return [text]
+        if starts[0] != 0:
+            starts = [0] + starts
+        segments = []
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else len(text)
+            seg = text[start:end].strip()
+            if seg:
+                segments.append(seg)
+        return segments
 
     def _split(self, text: str, separators: List[str], out: List[str]) -> None:
         if len(text) <= self.chunk_size:
