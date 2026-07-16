@@ -35,6 +35,10 @@ class RAGConfig:
     chunk_size: int = 900
     chunk_overlap: int = 150
 
+    # Qdrant (embedded / local file mode) — vector store with hybrid search.
+    qdrant_path: str = str(_BACKEND_DIR / "qdrant_db")
+    collection_name: str = "documents"
+    # (legacy LanceDB paths, kept so old code/data still resolves)
     db_path: str = str(_BACKEND_DIR / "lancedb")
     table_name: str = "documents"
 
@@ -51,7 +55,7 @@ class RAGConfig:
     rrf_k: int = 60
 
     ollama_base_url: str = "http://localhost:11434"
-    llm_model: str = "llama3.1:latest"   # clean Arabic + stable grounding (benchmarked)
+    llm_model: str = "llama3.1:latest"   # clean Arabic + stable grounding (benchmarked)llama3.2:3b   
     temperature: float = 0.0     # deterministic — least hallucination for factual QA
     max_tokens: int = 4096        # cap on answer length; lower = faster generation
     # Context window. Big enough for the prompt (~900 tok) + answer, small enough

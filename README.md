@@ -1,19 +1,19 @@
-# RAG Pipeline (LanceDB + BGE-M3 + Reranker + Ollama)
+# RAG Pipeline (Qdrant + BGE-M3 + Reranker + Ollama + Web UI)
 
-Upgraded RAG pipeline aimed at much higher answer quality than a plain
-vector-only setup. Four key changes vs. the typical `nomic-embed-text +
-LanceDB + Qwen` setup:
+نظام RAG كامل (backend + واجهة ويب) مظبوط لإجابات **دقيقة وسريعة** على مستنداتك
+(PDF / Excel / CSV / TXT / MD) — عربي وإنجليزي — مع GPU و streaming.
 
-1. **Cross-encoder reranking** with `BGE-reranker-v2-m3`
-   — single biggest quality win.
-2. **Hybrid search** (vector + BM25/FTS) fused with Reciprocal Rank Fusion
-   — catches exact keyword matches that embeddings miss.
-3. **`BGE-M3` embeddings** (1024 dim, multilingual)
-   — far better than `nomic-embed-text` for Arabic / mixed content.
-4. **Smarter chunking** (500/80, recursive, Arabic-aware separators).
+أهم نقاط القوة مقارنة بـ RAG عادي (vector-only):
 
-The LLM (Qwen via Ollama) is untouched on purpose — that's the smallest
-lever in a well-built RAG pipeline.
+1. **Cross-encoder reranking** بـ `BGE-reranker-v2-m3` — أكبر مكسب في الجودة.
+2. **بحث هجين** في Qdrant (dense + sparse من BGE-M3) مدموج بـ RRF — بيمسك
+   الكلمات المفتاحية الدقيقة (أرقام مواد، أكواد، اختصارات) اللي الـ embeddings
+   بتفوّتها.
+3. **`BGE-M3` embeddings** (1024-dim، multilingual) — ممتاز للعربي.
+4. **تقطيع واعٍ بالبنية** — كل «المادة N» / عنوان / قسم بيبقى chunk مستقل كامل،
+   فالموديل يقدر يقتبس النص حرفياً ويربط بين المواد.
+5. **برومبت تأريض صارم + temperature=0** — أقل هلوسة.
+6. **GPU + streaming + keep_alive** — أول كلمة في ~0.5 ثانية، إجابة كاملة في ~3 ثواني.
 
 ## Architecture
 
@@ -21,268 +21,175 @@ lever in a well-built RAG pipeline.
                 Query
                   │
         ┌─────────▼─────────┐
-        │   BGE-M3 embed    │
+        │ BGE-M3 dense+sparse│  (GPU)
         └─────────┬─────────┘
                   │
    ┌──────────────┼──────────────┐
    ▼              ▼              │
-Vector         BM25 (FTS)        │  Hybrid retrieval
-search         search            │  (LanceDB)
+Dense          Sparse            │  Hybrid retrieval (Qdrant, embedded)
+search         search            │
    │              │              │
    └──────┬───────┘              │
           ▼                      │
-     RRF fusion → top-20 ───────┘
+     RRF fusion → top-40 ───────┘
           │
           ▼
-  BGE-reranker-v2-m3 → top-5
+  BGE-reranker-v2-m3 → top-6   (GPU)
           │
           ▼
-    Qwen (Ollama) → answer
+   llama3.1:8b (Ollama) → streamed answer + sources
 ```
 
-## المتطلبات المسبقة (Prerequisites)
+## المتطلبات (Prerequisites)
 
-- **Python 3.11** (تم الاختبار على 3.11.9).
-- **Ollama** مثبّت وشغّال، ومعاه الموديلات المطلوبة:
+- **Python 3.11** و **Node.js 18+** (للواجهة).
+- **Ollama** شغّال + الموديل:
   ```powershell
-  ollama pull qwen2.5:7b          # الـ LLM المستخدم في config.py
-  ollama list                     # للتأكد إنه موجود
+  ollama pull llama3.1        # الـ LLM الافتراضي في config.py
   ```
-- **مساحة قرص ~3.5 GB** لموديلات HuggingFace (BGE-M3 ~2.3GB + reranker ~600MB) — بتتحمّل أوتوماتيك أول تشغيل.
+- **مساحة ~3.5 GB** لموديلات BGE (بتتحمّل أوتوماتيك أول تشغيل).
 
-## التحميل والتثبيت (Setup)
-
-### طريقة 1 — Windows / PowerShell (الإعداد الفعلي المُختبَر على CPU)
+## التثبيت (Setup)
 
 ```powershell
-# 1. إنشاء وتفعيل بيئة افتراضية
+# 1) بيئة افتراضية
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
-# 2. تثبيت المتطلبات الأساسية
+# 2) متطلبات الـ backend
 pip install -r requirements.txt
+pip install pypdf openpyxl "transformers>=4.44.2,<5.0"
 
-# 3. متطلبات إضافية لازمة:
-#    - pypdf لقراءة ملفات PDF
-#    - transformers أقل من 5.x (الإصدارات 5.x بتكسر الـ reranker)
-pip install pypdf "transformers>=4.44.2,<5.0"
+# 3) (للـ GPU) torch بنسخة CUDA — RTX 50-series محتاجة cu128
+.\.venv\Scripts\python.exe -m pip install --no-deps `
+  --index-url https://download.pytorch.org/whl/cu128 "torch==2.11.0+cu128"
+
+# تأكيد إن الـ GPU شُغّال:
+.\.venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available())"   # -> True
 ```
 
-> **ملاحظة CPU:** لو torch المثبّت نسخة CPU (من غير CUDA)، الـ [config.py](config.py)
-> مظبوط بالفعل على `embedding_device="cpu"` و `embedding_use_fp16=False`.
-> لو عندك GPU وثبّتت نسخة CUDA من torch، غيّرهم لـ `"cuda"` و `True`.
+> الـ device في [config.py](backend/config.py) = `"auto"`: بيستخدم الـ GPU للـ
+> embedder/reranker لو الكارت **≥10GB**، وإلا بيحطّهم على CPU عشان يسيب الـ GPU
+> بالكامل للـ LLM (الأهم على كروت 8GB زي RTX 4070). من غير CUDA بيرجع CPU تلقائياً.
 
-### طريقة 2 — Linux / macOS (bash)
+---
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install pypdf "transformers>=4.44.2,<5.0"
-```
+## 🚀 التشغيل (Run)
 
-### (اختياري) تحميل موديلات BGE مسبقًا عشان أول تشغيل يبقى أسرع
+### الواجهة الكاملة (backend + frontend)
 
 ```powershell
-.\.venv\Scripts\python.exe -c "from FlagEmbedding import BGEM3FlagModel; BGEM3FlagModel('BAAI/bge-m3')"
-.\.venv\Scripts\python.exe -c "from FlagEmbedding import FlagReranker; FlagReranker('BAAI/bge-reranker-v2-m3')"
+# Terminal 1 — الـ backend (API على بورت 8000)
+cd backend
+..\.venv\Scripts\python.exe -m uvicorn api:app --port 8000
+
+# Terminal 2 — الـ frontend (بورت 5173)
+cd frontend
+npm install        # أول مرة بس
+npm run dev
 ```
 
-## خطوات التشغيل (Run)
+افتح **http://localhost:5173**:
+- **اكتب سؤالك** → الإجابة بتظهر **streaming** (كلمة كلمة)، وتحتها زرار
+  **"sources"** يوريك المصادر مع نسبة التطابق.
+- **زرار "Add documents"** أو اسحب أي ملف على الصفحة → رفع + ingest فوري.
 
-### 1) إدخال المستندات (Ingestion) — "بس حط الملفات"
-
-أبسط طريقة (مناسبة لعشرات الآلاف من الملفات):
+### إدخال آلاف الملفات (CLI)
 
 ```powershell
-# 1. حط كل ملفاتك (PDF / Excel / نصوص) جوه فولدر  backend/data/
-# 2. من جوه فولدر backend شغّل من غير أي arguments:
+# 1) حط ملفاتك في  backend/data/    2) شغّل:
 cd backend
 ..\.venv\Scripts\python.exe ingest.py
 ```
 
-بيمشي على `data/` بالكامل (recursively) ويدخّل كل الأنواع المدعومة
-(`.pdf .xlsx .xls .csv .txt .md`)، يقسّمهم chunks، يعمل embedding على
-الـ GPU، يخزّنهم في LanceDB، وفي الآخر يبني فهرس BM25.
+بيمشي على `data/` كله (recursively)، يدعم `.pdf .xlsx .xls .csv .txt .md`،
+يقطّع، يعمل embedding على الـ GPU، يخزّن في LanceDB، ويبني فهارس BM25 + ANN.
 
-**مهم لـ 43 ألف ملف:**
-- **قابل للاستئناف (Resumable):** بيحتفظ بـ manifest للملفات الخلصانة. لو
-  العملية وقفت (Ctrl-C أو crash)، شغّل نفس الأمر تاني وهيكمّل من حيث وقف.
-- **عزل الأخطاء:** ملف PDF واحد باظ مش هيوقف الباقي — الفشل بيتسجّل في
-  `ingest_errors.log` والملف بيتعدّى.
-- **تقدّم + ETA** بيتطبع أول بأول.
+**مظبوط لـ 43 ألف ملف:**
+- **قابل للاستئناف:** manifest للملفات الخلصانة — لو وقف، شغّله تاني يكمّل.
+- **عزل الأخطاء:** ملف باظ مايوقفش الباقي (بيتسجّل في `ingest_errors.log`).
+- أوامر إضافية:
+  ```powershell
+  ..\.venv\Scripts\python.exe ingest.py "C:\path\to\file.pdf"   # ملف واحد
+  ..\.venv\Scripts\python.exe ingest.py --ext .pdf,.xlsx        # أنواع محددة
+  ..\.venv\Scripts\python.exe ingest.py --reset-manifest        # إعادة إدخال الكل
+  ```
 
-أوامر إضافية (من جوه فولدر `backend`):
-```powershell
-..\.venv\Scripts\python.exe ingest.py "C:\path\to\file.pdf"   # ملف واحد
-..\.venv\Scripts\python.exe ingest.py "D:\my_docs"            # فولدر معيّن
-..\.venv\Scripts\python.exe ingest.py --ext .pdf,.xlsx        # أنواع محددة بس
-..\.venv\Scripts\python.exe ingest.py --reset-manifest        # إعادة إدخال الكل
-```
+> ⚠️ بعد أي تغيير في إعدادات التقطيع، أعِد الإدخال بـ `--reset-manifest`
+> عشان الملفات تتقطّع بالطريقة الجديدة.
 
-### 2) السؤال (Query)
+### من سطر الأوامر / كود
 
 ```powershell
 cd backend
-# سؤال واحد
-..\.venv\Scripts\python.exe query.py "What is a primary key in SQL?"
-
-# وضع تفاعلي (أسرع — الموديلات بتتحمّل مرة واحدة)
-..\.venv\Scripts\python.exe query.py -i
+..\.venv\Scripts\python.exe query.py "ما هو الـ primary key؟"   # سؤال واحد
+..\.venv\Scripts\python.exe query.py -i                          # وضع تفاعلي
+..\.venv\Scripts\python.exe benchmark.py                         # قياس الأداء
 ```
-
-### 3) الاختبار من الكود (Test harness)
-
-[test_rag.py](test_rag.py) بيحمّل الـ pipeline مرة واحدة ويشغّل قايمة أسئلة:
-
-```powershell
-cd backend
-# يجرب قايمة الأسئلة اللي جوه السكربت
-..\.venv\Scripts\python.exe test_rag.py
-
-# أو سؤال واحد من سطر الأوامر
-..\.venv\Scripts\python.exe test_rag.py "What is a foreign key?"
-```
-لتجربة أسئلتك الخاصة، عدّل الـ `QUESTIONS` list في أول [test_rag.py](test_rag.py).
-
-### الاستخدام مباشرة من الكود (Library)
 
 ```python
 from rag import RAGPipeline
-
 rag = RAGPipeline()
-
-# إدخال
-rag.ingest_text("Long document text here...", source="my_doc.txt")
-rag.ingest_file("SQL.pdf")     # يدعم .pdf و .txt و .md
-rag.build_indexes()            # تُستدعى مرة واحدة بعد انتهاء الإدخال
-
-# سؤال
-result = rag.query("What is the policy on X?")
-print(result["answer"])
-for src in result["sources"]:
-    print(src["source"], src["rerank_score"])
+rag.ingest_file("data/contract.pdf"); rag.build_indexes()
+print(rag.query("اشرح المادة 17 واربطها بالمواد الأخرى")["answer"])
 ```
 
-## Hardware notes (RTX 5060 Ti, 16 GB VRAM)
+---
 
-`config.py` now runs the embedder **and** reranker on the GPU (`cuda`, fp16).
-16 GB fits all three components at once:
+## مفاتيح الضبط (في [config.py](backend/config.py))
 
-| Component            | VRAM      |
-|----------------------|-----------|
-| BGE-M3 (fp16)        | ~1.2 GB   |
-| Reranker (fp16)      | ~0.6 GB   |
-| Qwen 2.5 7B (Q4_K_M) | ~5 GB     |
+| Setting | Default | امتى تغيّره |
+|---------|---------|------------|
+| `llm_model` | `llama3.1:latest` | موديل تاني من Ollama |
+| `chunk_size` / `chunk_overlap` | 900 / 150 | أكبر للجداول/الفقرات الطويلة |
+| `initial_top_k` / `final_top_k` | 40 / 6 | ارفعهم لو الاسترجاع بيفوّت |
+| `vector_weight` / `bm25_weight` | 0.5 / 0.5 | ↑ bm25 للكلمات/الأرقام الدقيقة |
+| `temperature` | 0.0 | خلّيه 0 للأسئلة الواقعية |
+| `max_tokens` | 700 | أقل = أسرع |
+| `num_ctx` | 4096 | ارفعه لو زوّدت `final_top_k`/`chunk_size` كتير |
+| `llm_keep_alive` | `30m` | `-1` يخلّي الموديل محمّل دايماً |
+| `embedding_device` / `reranker_device` | `auto` | `cuda` / `cpu` بالإجبار |
 
-### GPU torch (required for fast ingestion)
+## تشخيص جودة الإجابة (الترتيب مقصود — 80% من المشاكل في الاسترجاع)
 
-The default `pip install` gives a **CPU-only** torch. The RTX 50-series
-(Blackwell) needs a **CUDA 12.8** build:
+1. هل الـ chunk الصح ضمن `initial_top_k`؟ لو لأ → ارفعه أو زوّد `bm25_weight`.
+2. هل فضل بعد الـ rerank ضمن `final_top_k`؟ لو في رتبة 7–10 → ارفع `final_top_k`.
+3. الـ chunk صح والإجابة غلط؟ دي مشكلة LLM → جرّب موديل أكبر أو شدّ البرومبت في
+   [llm.py](backend/llm.py).
 
-```powershell
-.\.venv\Scripts\python.exe -m pip install --no-deps `
-  --index-url https://download.pytorch.org/whl/cu128 "torch==2.11.0+cu128"
-```
+## Troubleshooting
 
-Verify it took:
-
-```powershell
-.\.venv\Scripts\python.exe -c "import torch; print(torch.cuda.is_available())"
-# -> True
-```
-
-If it prints `False`, ingestion still works but falls back to CPU (much
-slower). Set `embedding_device="cpu"` in `config.py` to silence CUDA errors.
-
-## Tuning knobs (in `config.py`)
-
-| Setting              | Default | When to change                              |
-|----------------------|---------|---------------------------------------------|
-| `chunk_size`         | 500     | Bigger (800–1200) for tables / code blocks  |
-| `chunk_overlap`      | 80      | Bigger if answers split across chunk borders|
-| `initial_top_k`      | 20      | 30–50 if recall is the bottleneck           |
-| `final_top_k`        | 5       | 3 for narrow questions, 8 for synthesis     |
-| `vector_weight`      | 0.5     | ↑ for paraphrased/semantic queries          |
-| `bm25_weight`        | 0.5     | ↑ for exact keywords, IDs, acronyms         |
-| `temperature`        | 0.1     | Keep low for factual QA                     |
-
-## Quality debugging
-
-When an answer is wrong, check in this order:
-
-1. **Are the right chunks in `initial_top_k`?** If no, raise it or shift
-   `bm25_weight` up (most "lost" matches are keyword-shaped).
-2. **Are they in `final_top_k` after reranking?** If they're at rank 6–10,
-   bump `final_top_k`. If they're not in the rerank input at all, problem
-   is upstream.
-3. **Are they in the final context but the answer still wrong?** Now it's
-   an LLM issue — try Qwen 14B if you're on 7B, or tighten the system
-   prompt in `llm.py`.
-
-This ordering is on purpose: 80% of RAG quality issues are retrieval,
-not generation.
-
-## استكشاف الأخطاء (Troubleshooting)
-
-| المشكلة | السبب | الحل |
-|---------|-------|------|
-| `XLMRobertaTokenizer has no attribute prepare_for_model` | `transformers` 5.x غير متوافق مع الـ reranker | `pip install "transformers>=4.44.2,<5.0"` |
-| `UnicodeEncodeError: 'charmap' codec...` عند طباعة المصادر | الـ console على ويندوز بيستخدم cp1252 | تم حلّه في [query.py](query.py) و [test_rag.py](test_rag.py) بإجبار UTF-8 |
-| الإدخال بطيء جدًا / يفشل على PDF | `pypdf` غير مثبّت | `pip install pypdf` |
-| `cuda` errors أو بطء شديد | torch نسخة CPU بس الـ config على `cuda` | خلّي `embedding_device="cpu"` في [config.py](config.py) |
-| أول تشغيل بطيء (دقايق) | تحميل موديلات BGE من HuggingFace | طبيعي — مرة واحدة بس، بعدها بتتكاش |
+| المشكلة | الحل |
+|---------|------|
+| `torch.cuda.is_available()` → False | ثبّت torch cu128 (فوق)؛ غير كده بيشتغل على CPU |
+| الرد بطيء جداً على 8GB | الموديل بيتسرّب للـ CPU — استخدم موديل ≤8B وسيب `device="auto"` |
+| `transformers` 5.x بيكسر الـ reranker | `pip install "transformers>=4.44.2,<5.0"` |
+| `/api/ask/stream` → Not Found | في سيرفر قديم شغّال — اقفله وشغّل واحد |
+| `Storage folder ... already accessed by another instance` | Qdrant المحلي بيتفتح من عملية واحدة بس — اقفل الـ backend قبل ما تشغّل `ingest.py`، أو ارفع الملفات من الواجهة بدل الـ CLI |
+| `meta tensor` عند التحميل | اتنين backend بيحمّلوا الموديلات مع بعض — شغّل **واحد بس** |
+| أول تشغيل بطيء (دقايق) | تحميل موديلات BGE — مرة واحدة بس |
 
 ## File layout
 
 ```
 rag/
-├── backend/              # كل ملفات الـ RAG (Python) + الـ API
-│   ├── config.py         # All knobs in one place
-│   ├── chunking.py       # Recursive chunker with Arabic/English separators
-│   ├── embeddings.py     # BGE-M3 wrapper
-│   ├── reranker.py       # BGE-reranker-v2-m3 wrapper
-│   ├── vector_store.py   # LanceDB + hybrid search + RRF fusion
-│   ├── llm.py            # Ollama client + RAG prompt template
-│   ├── rag.py            # Pipeline (PDF / xlsx / csv / txt / md ingest)
-│   ├── ingest.py         # CLI: bulk-ingest (resumable, for 43k+ files)
-│   ├── query.py          # CLI: ask questions
-│   ├── api.py            # FastAPI server for the web UI
-│   ├── test_rag.py       # Test harness
-│   ├── data/             # ← drop your files here (PDF/Excel/...)
-│   └── lancedb/          # the vector DB (auto-created)
-├── frontend/             # واجهة الويب (React + Vite + Tailwind + shadcn)
-│   └── src/
-│       ├── App.tsx                    # the chat + upload UI
-│       ├── lib/api.ts                 # calls the backend
-│       └── components/ui/ai-prompt-box.tsx
+├── backend/                 # كل كود الـ RAG (Python) + الـ API
+│   ├── config.py            # كل الإعدادات
+│   ├── chunking.py          # تقطيع واعٍ بالبنية (مواد/عناوين)
+│   ├── embeddings.py        # BGE-M3
+│   ├── reranker.py          # BGE-reranker-v2-m3
+│   ├── qdrant_store.py      # Qdrant (embedded): dense+sparse hybrid + RRF
+│   ├── vector_store.py      # legacy LanceDB store (unused; kept for reference)
+│   ├── llm.py               # Ollama client + برومبت + streaming
+│   ├── rag.py               # الـ pipeline (PDF/xlsx/csv/txt/md)
+│   ├── ingest.py            # CLI إدخال بالجملة (resumable)
+│   ├── query.py             # CLI أسئلة
+│   ├── benchmark.py         # قياس السرعة/الأداء
+│   ├── api.py               # FastAPI (يشمل /api/ask/stream)
+│   ├── data/                # ← حط ملفاتك هنا
+│   └── qdrant_db/           # قاعدة Qdrant المحلية (أوتوماتيك)
+├── frontend/                # React + Vite + Tailwind + shadcn
+│   └── src/{App.tsx, lib/api.ts, components/ui/ai-prompt-box.tsx}
 ├── requirements.txt
 └── README.md
 ```
-
-## 🌐 الواجهة (Web UI)
-
-واجهة ويب: حد يرفع ملفات أو يسأل سؤال ويشوف الرد مع المصادر.
-
-**شغّل الاتنين في تيرمينالين منفصلين:**
-
-```powershell
-# Terminal 1 — الـ backend (API على بورت 8000)
-cd backend
-..\.venv\Scripts\
-
-# Terminal 2 — الـ frontend (على بورت 5173)
-cd frontend
-npm install      # أول مرة بس
-npm run dev
-```
-
-بعدين افتح **http://localhost:5173** في المتصفح.
-
-- **زرار "Add documents"** (أو اسحب وأفلت أي ملف على الصفحة) → بيرفع الملف،
-  يعمله ingest، ويبني الفهارس. يدعم PDF / Excel / CSV / TXT / MD.
-- **اكتب سؤالك** في صندوق الإدخال تحت → بيرجّع الإجابة + المصادر مع نسبة
-  التطابق (rerank score).
-
-> الـ Vite عنده proxy بيوصّل `/api/*` للـ backend تلقائياً، فمفيش إعداد CORS
-> مطلوب منك.

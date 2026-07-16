@@ -82,23 +82,7 @@ def health():
 @app.get("/api/stats")
 def stats():
     rag = get_rag()
-    try:
-        chunks = rag.store.table.count_rows()
-    except Exception:
-        chunks = 0
-    # Count distinct source files. Projected scan (source column only, no
-    # vectors) keeps this cheap even with millions of chunks.
-    files = 0
-    try:
-        tbl = rag.store.table.to_lance().to_table(columns=["source"])
-        files = len(set(tbl.column("source").to_pylist()))
-    except Exception:
-        try:
-            tbl = rag.store.table.to_arrow()
-            files = len(set(tbl.column("source").to_pylist()))
-        except Exception:
-            pass
-    return {"chunks": chunks, "files": files}
+    return {"chunks": rag.store.count(), "files": rag.store.distinct_sources()}
 
 
 @app.post("/api/ask", response_model=AskResponse)

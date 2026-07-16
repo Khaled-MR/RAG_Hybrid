@@ -120,7 +120,7 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    manifest_path = Path(config.db_path) / "ingested_manifest.json"
+    manifest_path = Path(config.qdrant_path) / "ingested_manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     error_log = Path("ingest_errors.log")
 

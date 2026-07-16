@@ -27,7 +27,7 @@ from config import RAGConfig
 from chunking import RecursiveChunker
 from embeddings import BGEEmbedder
 from reranker import BGEReranker
-from vector_store import HybridStore
+from qdrant_store import QdrantStore
 from llm import OllamaLLM
 
 
@@ -56,9 +56,9 @@ class RAGPipeline:
             use_fp16=rerank_fp16,
             device=rerank_device,
         )
-        self.store = HybridStore(
-            db_path=self.config.db_path,
-            table_name=self.config.table_name,
+        self.store = QdrantStore(
+            db_path=self.config.qdrant_path,
+            collection_name=self.config.collection_name,
             embedding_dim=self.config.embedding_dim,
         )
         self.store.create_or_open()
@@ -81,20 +81,22 @@ class RAGPipeline:
         if not chunks:
             return 0
 
-        vectors = self.embedder.embed_documents(
+        dense, sparse = self.embedder.embed_documents_hybrid(
             chunks,
             batch_size=self.config.embedding_batch_size,
         )
 
+        meta_json = json.dumps(metadata or {}, ensure_ascii=False)
         records = [
             {
                 "id": str(uuid.uuid4()),
                 "text": chunk,
                 "source": source,
-                "metadata": json.dumps(metadata or {}, ensure_ascii=False),
-                "vector": vec.tolist(),
+                "metadata": meta_json,
+                "dense": vec.tolist(),
+                "sparse": sp,
             }
-            for chunk, vec in zip(chunks, vectors)
+            for chunk, vec, sp in zip(chunks, dense, sparse)
         ]
         self.store.add(records)
         return len(records)
@@ -206,25 +208,21 @@ class RAGPipeline:
 
     def build_indexes(self) -> None:
         """
-        Call once after ingesting all documents. Builds:
-          * the BM25 (FTS) index for keyword search, and
-          * an ANN vector index for fast semantic search on large corpora.
+        Call once after ingesting all documents. Qdrant maintains its dense and
+        sparse indexes automatically, so this is a no-op kept for API parity.
         """
         self.store.build_fts_index("text")
-        built = self.store.build_vector_index()
-        if not built:
-            print("[info] Skipped ANN vector index (too few rows; brute-force "
-                  "search is fine at this size).")
+        self.store.build_vector_index()
 
     # ---------- Retrieval ----------
 
     def retrieve(self, query: str) -> List[Dict[str, Any]]:
-        query_vector = self.embedder.embed_query(query)
+        query_dense, query_sparse = self.embedder.embed_query_hybrid(query)
 
-        # Stage 1: hybrid search → top initial_top_k candidates
+        # Stage 1: hybrid search (dense + sparse, RRF-fused) → top candidates
         candidates = self.store.hybrid_search(
-            query_text=query,
-            query_vector=query_vector,
+            query_dense=query_dense,
+            query_sparse=query_sparse,
             top_k=self.config.initial_top_k,
             vector_weight=self.config.vector_weight,
             bm25_weight=self.config.bm25_weight,
