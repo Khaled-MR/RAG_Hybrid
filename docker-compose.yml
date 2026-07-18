@@ -51,8 +51,8 @@ services:
 
   # ---- RAG backend (FastAPI + BGE-M3 embedder/reranker on GPU) ----
   backend:
-    image: rag-backend:latest        # built with the legacy builder (see README);
-    build:                           # `docker compose up` reuses it, no rebuild
+    image: km16823/rag-hybrid-backend:latest   # pulled from Docker Hub on other machines
+    build:                           # (or built locally with `docker compose build`)
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
@@ -82,7 +82,7 @@ services:
 
   # ---- Web UI (nginx serving the built Vite app, proxies /api -> backend) ----
   frontend:
-    image: rag-frontend:latest       # built with the legacy builder (see README)
+    image: km16823/rag-hybrid-frontend:latest   # pulled from Docker Hub on other machines
     build:
       context: ./frontend
       dockerfile: Dockerfile
