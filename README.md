@@ -15,6 +15,71 @@
 5. **برومبت تأريض صارم + temperature=0** — أقل هلوسة.
 6. **GPU + streaming + keep_alive** — أول كلمة في ~0.5 ثانية، إجابة كاملة في ~3 ثواني.
 
+---
+
+## ⚡ التشغيل السريع (Quick Start) — أي حد، من الصفر
+
+كل حاجة بتشتغل بـ Docker. اتبع الخطوات بالترتيب.
+
+### 1) المتطلبات (مرة واحدة)
+- **كارت NVIDIA** (8GB+، مثالي 16GB) + أحدث درايفر.
+- **Docker Desktop** (ويندوز: فعّل **WSL2** ودعم **GPU**) — أو على لينكس: Docker + **NVIDIA Container Toolkit**.
+- ~20GB مساحة فاضية.
+- تأكّد إن Docker شايف الكارت (لازم يطبع الكارت):
+  ```bash
+  docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
+  ```
+  لو فشل → مشكلة إعداد GPU في Docker (راجع NVIDIA Container Toolkit / WSL2 GPU).
+
+### 2) نزّل الكود وشغّله
+```bash
+git clone https://github.com/Khaled-MR/RAG_Hybrid.git
+cd RAG_Hybrid
+cp .env.example .env
+
+docker compose up -d --build
+```
+ده بيعمل الآتي أوتوماتيك:
+- **frontend** يتسحب جاهز من Docker Hub.
+- **backend** يتبني محلياً (torch+CUDA ~12.5GB، أول مرة بس، ~20-40 دقيقة).
+- **Qdrant** (قاعدة المتجهات) و**Ollama** يشتغلوا، و**موديل Qwen يتسحب تلقائياً**.
+
+> لو البناء وقع بخطأ SSL/شبكة (بيحصل على بعض شبكات WSL2 بسبب الـ MTU):
+> ```bash
+> DOCKER_BUILDKIT=0 docker compose build && docker compose up -d
+> ```
+
+### 3) استنى الخدمات تجهز
+```bash
+docker compose ps                    # كلهم لازم يكونوا Up
+curl http://localhost:8000/api/health  # {"status":"ok",...}
+```
+(أول تشغيل بياخد دقايق: تحميل موديلات BGE + Qwen.)
+
+### 4) حطّ ملفاتك وأدخِلها (ingest)
+```bash
+# 1) انسخ ملفاتك (PDF / Excel / CSV / TXT / MD) في:
+#      RAG_Hybrid/backend/data/
+# 2) أدخِلها في القاعدة:
+docker compose exec backend python ingest.py
+```
+
+### 5) استخدم النظام
+افتح المتصفح على **http://localhost:3000** — اكتب سؤالك (بيرجع إجابة + مصادر)،
+أو اسحب ملفات على الصفحة لإضافتها.
+
+### أوامر يومية
+```bash
+docker compose logs -f backend   # متابعة اللوجز
+docker compose down              # إيقاف (البيانات في volumes تفضل موجودة)
+docker compose up -d             # تشغيل تاني (من غير --build)
+```
+
+> **ملاحظة:** الـ backend بيتبني محلياً مش بيتسحب (صورته كبيرة أوي ~12.5GB على الرفع
+> الموثوق). الكود كله على GitHub فالبناء المحلي هو الطريقة المعتمدة.
+
+---
+
 ## Architecture
 
 ```
