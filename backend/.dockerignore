@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+qdrant_db/
+lancedb/
+data/*
+!data/.gitkeep
+*.log
+BENCHMARK_REPORT.md

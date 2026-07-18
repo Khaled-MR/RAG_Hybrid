@@ -72,6 +72,12 @@ export default function App() {
       .trim();
     if (!q || isAsking) return;
 
+    // Build chat history from prior completed turns (before adding this one).
+    const history = messages
+      .filter((m) => m.content && !m.error)
+      .slice(-8)
+      .map((m) => ({ role: m.role, content: m.content }));
+
     const answerId = uid();
     setMessages((m) => [
       ...m,
@@ -90,7 +96,7 @@ export default function App() {
           m.map((msg) => (msg.id === answerId ? { ...msg, content: msg.content + text } : msg))
         ),
         onDone: (elapsed) => patch({ elapsed }),
-      });
+      }, history);
     } catch (err) {
       patch({ content: `Couldn't get an answer: ${(err as Error).message}`, error: true });
     } finally {

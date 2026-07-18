@@ -1,0 +1,17 @@
+# Build context is the repo root (see docker-compose.yml).
+.git/
+.venv/
+**/__pycache__/
+**/*.pyc
+**/*.log
+
+# large / regenerable data — not baked into images
+backend/qdrant_db/
+backend/lancedb/
+backend/data/*
+!backend/data/.gitkeep
+backend/BENCHMARK_REPORT.md
+
+# frontend build artifacts / deps (frontend image builds these itself)
+frontend/node_modules/
+frontend/dist/

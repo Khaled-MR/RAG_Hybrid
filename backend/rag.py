@@ -14,6 +14,7 @@ Flow (ingest):
 """
 
 import json
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -60,6 +61,7 @@ class RAGPipeline:
             db_path=self.config.qdrant_path,
             collection_name=self.config.collection_name,
             embedding_dim=self.config.embedding_dim,
+            url=self.config.qdrant_url,
         )
         self.store.create_or_open()
         self.llm = OllamaLLM(
@@ -95,8 +97,10 @@ class RAGPipeline:
                 "metadata": meta_json,
                 "dense": vec.tolist(),
                 "sparse": sp,
+                "seq": i,                            # position within this file
+                "section": self._detect_section(chunk),  # e.g. "المادة 17"
             }
-            for chunk, vec, sp in zip(chunks, dense, sparse)
+            for i, (chunk, vec, sp) in enumerate(zip(chunks, dense, sparse))
         ]
         self.store.add(records)
         return len(records)
@@ -214,48 +218,134 @@ class RAGPipeline:
         self.store.build_fts_index("text")
         self.store.build_vector_index()
 
+    # ---------- Query rewrite & citation formatting (quality) ----------
+
+    def rewrite_query(self, question, history=None):
+        """Colloquial/follow-up question -> formal STANDALONE query for retrieval."""
+        if not self.config.enable_query_rewrite:
+            return question
+        return self.llm.rewrite(question, history=history)
+
+    # Detect an article/section label so citations & filtering can be exact.
+    _ARTICLE_RE = re.compile(
+        r"(?:المادة|مادة|الفصل|الباب|القسم|البند)\s+[\d٠-٩]+"
+        r"|(?:Article|Section|Clause|Chapter)\s+\d+",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _normalize_section(s: str) -> str:
+        # unify Arabic-Indic digits and whitespace so query & stored labels match
+        trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+        return " ".join(s.translate(trans).split()).lower()
+
+    def _detect_section(self, text: str) -> str:
+        m = self._ARTICLE_RE.search((text or "")[:120])
+        return self._normalize_section(m.group(0)) if m else ""
+
+    def _query_section(self, query: str) -> str:
+        """If the user's query names an article ('المادة 17'), return it normalized."""
+        m = self._ARTICLE_RE.search(query or "")
+        return self._normalize_section(m.group(0)) if m else ""
+
+    def format_contexts(self, retrieved: List[Dict[str, Any]]) -> List[str]:
+        """
+        Label each passage with its source file and detected article so the LLM
+        can cite precisely as [المصدر: <file> - المادة N].
+        """
+        out = []
+        for r in retrieved:
+            source = Path(r.get("source", "unknown")).name
+            m = self._ARTICLE_RE.search((r.get("text", "") or "")[:120])
+            label = f"المصدر: {source}" + (f" - {m.group(0)}" if m else "")
+            out.append(f"({label})\n{r.get('text', '')}")
+        return out
+
     # ---------- Retrieval ----------
 
-    def retrieve(self, query: str) -> List[Dict[str, Any]]:
-        query_dense, query_sparse = self.embedder.embed_query_hybrid(query)
-
-        # Stage 1: hybrid search (dense + sparse, RRF-fused) → top candidates
-        candidates = self.store.hybrid_search(
-            query_dense=query_dense,
-            query_sparse=query_sparse,
+    def _hybrid_one(self, q: str) -> List[Dict[str, Any]]:
+        qd, qs = self.embedder.embed_query_hybrid(q)
+        return self.store.hybrid_search(
+            query_dense=qd, query_sparse=qs,
             top_k=self.config.initial_top_k,
             vector_weight=self.config.vector_weight,
             bm25_weight=self.config.bm25_weight,
             rrf_k=self.config.rrf_k,
         )
+
+    def retrieve(self, query: str, extra_queries: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        # Stage 1: hybrid search for each query variant, RRF-merge (multi-query).
+        queries = [query] + [q for q in (extra_queries or []) if q and q != query]
+        merged: Dict[Any, Dict] = {}
+        for q in queries:
+            for rank, item in enumerate(self._hybrid_one(q), start=1):
+                m = merged.get(item["id"])
+                if m is None:
+                    merged[item["id"]] = {"item": item, "score": 0.0}
+                    m = merged[item["id"]]
+                m["score"] += 1.0 / (self.config.rrf_k + rank)
+        candidates = [m["item"] for m in
+                      sorted(merged.values(), key=lambda x: x["score"], reverse=True)]
+        candidates = candidates[: self.config.initial_top_k]
+
+        # Article boost: if the query names an article, pull it in explicitly.
+        if self.config.enable_article_filter:
+            sec = self._query_section(query)
+            if sec:
+                have = {c["id"] for c in candidates}
+                boost = [c for c in self.store.search_section(sec, top_k=5)
+                         if c["id"] not in have]
+                candidates = boost + candidates
+
         if not candidates:
             return []
 
         # Stage 2: rerank → top final_top_k
-        texts = [c["text"] for c in candidates]
         reranked = self.reranker.rerank(
             query=query,
-            documents=texts,
+            documents=[c["text"] for c in candidates],
             top_k=self.config.final_top_k,
         )
+        return [{**candidates[idx], "rerank_score": float(score)} for idx, score in reranked]
 
-        return [
-            {**candidates[idx], "rerank_score": float(score)}
-            for idx, score in reranked
-        ]
+    def _expand_with_neighbors(self, retrieved: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Add neighbouring chunks (same file, seq +/- window) for fuller context.
+        Returns an ordered, de-duplicated list (primary hits + neighbours)."""
+        if not self.config.enable_neighbor_expansion:
+            return retrieved
+        # Always keep the primary (reranked) hits; add neighbours up to the cap
+        # so the prompt stays small enough to keep generation fast.
+        by_id = {r["id"]: r for r in retrieved}
+        cap = self.config.max_context_passages
+        for r in retrieved:
+            if len(by_id) >= cap:
+                break
+            for nb in self.store.fetch_neighbors(
+                r.get("source", ""), r.get("seq", -1), self.config.neighbor_window
+            ):
+                if len(by_id) >= cap:
+                    break
+                by_id.setdefault(nb["id"], nb)
+        # order by (source, seq) so passages read naturally
+        return sorted(by_id.values(),
+                      key=lambda x: (x.get("source", ""), x.get("seq", 0)))
 
     # ---------- Generation ----------
 
-    def query(self, question: str, return_sources: bool = True) -> Dict[str, Any]:
-        retrieved = self.retrieve(question)
-        contexts = [r["text"] for r in retrieved]
+    def query(self, question: str, history: Optional[List[dict]] = None,
+              return_sources: bool = True) -> Dict[str, Any]:
+        search_q = self.rewrite_query(question, history=history)
+        extra = [question] if self.config.enable_multi_query else None
+        retrieved = self.retrieve(search_q, extra_queries=extra)
+        contexts = self.format_contexts(self._expand_with_neighbors(retrieved))
         answer = self.llm.generate(
-            query=question,
+            query=question,                 # answer the ORIGINAL question
             contexts=contexts,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
+            history=history,
         )
         result = {"answer": answer}
         if return_sources:
-            result["sources"] = retrieved
+            result["sources"] = retrieved   # primary hits only (clean sources list)
         return result

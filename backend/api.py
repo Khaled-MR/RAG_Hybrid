@@ -58,8 +58,14 @@ def get_rag() -> RAGPipeline:
     return _rag
 
 
+class Turn(BaseModel):
+    role: str
+    content: str
+
+
 class AskRequest(BaseModel):
     question: str
+    history: List[Turn] = []      # prior turns (client-side chat history)
 
 
 class Source(BaseModel):
@@ -91,9 +97,10 @@ def ask(req: AskRequest):
     if not question:
         raise HTTPException(status_code=400, detail="Question is empty.")
     rag = get_rag()
+    history = [t.model_dump() for t in req.history]
     t0 = time.time()
     try:
-        result = rag.query(question)
+        result = rag.query(question, history=history)
     except Exception as exc:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Query failed: {exc}")
@@ -121,11 +128,14 @@ def ask_stream(req: AskRequest):
     if not question:
         raise HTTPException(status_code=400, detail="Question is empty.")
     rag = get_rag()
+    history = [t.model_dump() for t in req.history]
 
     def gen():
         t0 = time.time()
         try:
-            retrieved = rag.retrieve(question)
+            search_q = rag.rewrite_query(question, history=history)
+            extra = [question] if rag.config.enable_multi_query else None
+            retrieved = rag.retrieve(search_q, extra_queries=extra)
             sources = [
                 {
                     "text": s.get("text", ""),
@@ -136,12 +146,13 @@ def ask_stream(req: AskRequest):
             ]
             yield json.dumps({"type": "sources", "sources": sources}) + "\n"
 
-            contexts = [r["text"] for r in retrieved]
+            contexts = rag.format_contexts(rag._expand_with_neighbors(retrieved))
             for chunk in rag.llm.generate_stream(
-                query=question,
+                query=question,                 # answer the ORIGINAL question
                 contexts=contexts,
                 temperature=rag.config.temperature,
                 max_tokens=rag.config.max_tokens,
+                history=history,
             ):
                 yield json.dumps({"type": "delta", "text": chunk}) + "\n"
 

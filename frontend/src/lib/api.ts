@@ -47,6 +47,11 @@ export async function ask(question: string): Promise<AskResponse> {
   return asJson<AskResponse>(res);
 }
 
+export interface Turn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface StreamHandlers {
   onSources?: (sources: Source[]) => void;
   onDelta?: (text: string) => void;
@@ -56,12 +61,17 @@ export interface StreamHandlers {
 /**
  * Ask with a streamed answer. Reads newline-delimited JSON from the backend
  * and invokes the handlers as events arrive. Resolves when the stream ends.
+ * `history` carries prior turns so follow-up questions work.
  */
-export async function askStream(question: string, handlers: StreamHandlers): Promise<void> {
+export async function askStream(
+  question: string,
+  handlers: StreamHandlers,
+  history: Turn[] = []
+): Promise<void> {
   const res = await fetch("/api/ask/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, history }),
   });
   if (!res.ok || !res.body) {
     let detail = res.statusText;

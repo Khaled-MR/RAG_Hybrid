@@ -1,0 +1,98 @@
+# Full-stack RAG: Qdrant + Ollama (Qwen) + FastAPI backend + web UI.
+#
+#   docker compose up -d --build         # build & start everything
+#   docker compose logs -f backend       # watch backend logs
+#   docker compose down                  # stop
+#
+# GPU: requires the NVIDIA Container Toolkit (Docker Desktop + WSL2 on Windows).
+# Both `ollama` and `backend` use the GPU; 16GB fits Qwen2.5-7B + BGE together.
+
+services:
+  # ---- Vector DB (hybrid: dense + sparse) ----
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    # No host port needed — the backend reaches it internally at qdrant:6333.
+    # (Avoids clashing with another Qdrant already using 6333/6334 on the host.)
+    expose:
+      - "6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # ---- LLM server (Qwen via Ollama) ----
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11435:11434"      # host 11435 (11434 may be used by a native Ollama)
+    volumes:
+      - ollama_models:/root/.ollama
+    environment:
+      OLLAMA_FLASH_ATTENTION: "1"      # faster prompt eval, lower memory
+      OLLAMA_KV_CACHE_TYPE: "q8_0"     # quantized KV cache — more context per GB
+      OLLAMA_KEEP_ALIVE: "30m"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---- One-shot: pull the Qwen model into Ollama, then exit ----
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: "http://ollama:11434"
+    entrypoint: ["sh", "-c", "sleep 3 && ollama pull ${LLM_MODEL:-qwen2.5:7b}"]
+    restart: "no"
+
+  # ---- RAG backend (FastAPI + BGE-M3 embedder/reranker on GPU) ----
+  backend:
+    image: rag-backend:latest        # built with the legacy builder (see README);
+    build:                           # `docker compose up` reuses it, no rebuild
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+      - ollama
+    ports:
+      - "8000:8000"
+    environment:
+      QDRANT_URL: "http://qdrant:6333"
+      OLLAMA_BASE_URL: "http://ollama:11434"
+      LLM_MODEL: "${LLM_MODEL:-qwen2.5:7b}"
+      # BGE models download to the hf_models volume on first run. After that you
+      # can set this to "1" for fully offline / airgapped operation (no calls to
+      # huggingface.co — also avoids startup hangs when HF is slow).
+      HF_HUB_OFFLINE: "${HF_HUB_OFFLINE:-0}"
+    volumes:
+      - ./backend/data:/app/data        # drop files here to ingest
+      - hf_models:/models               # cache BGE models across restarts
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # ---- Web UI (nginx serving the built Vite app, proxies /api -> backend) ----
+  frontend:
+    image: rag-frontend:latest       # built with the legacy builder (see README)
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+
+volumes:
+  qdrant_data:
+  ollama_models:
+  hf_models:

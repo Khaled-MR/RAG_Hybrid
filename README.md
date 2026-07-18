@@ -136,6 +136,67 @@ print(rag.query("اشرح المادة 17 واربطها بالمواد الأخ
 
 ---
 
+## 📦 تشغيل المشروع على جهاز تاني (Deployment)
+
+المشروع كله Dockerized، فأي حد يقدر يشغّله بنفس السلوك.
+
+### المتطلبات على الجهاز الجديد
+- **NVIDIA GPU** (8GB+، مثالي 16GB) + درايفر حديث.
+- **Docker** + **NVIDIA Container Toolkit** (ويندوز: Docker Desktop + WSL2 مع GPU مفعّل؛ لينكس: `nvidia-container-toolkit`).
+- ~20GB مساحة (صور + موديلات).
+- تأكيد إن Docker شايف الـ GPU:
+  ```bash
+  docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
+  ```
+
+### التشغيل (أمر واحد)
+```bash
+git clone <repo-url> && cd rag
+cp .env.example .env
+./start.sh                 # يبني، يشغّل الكل، يسحب Qwen تلقائياً، ويعمل ingest لـ backend/data
+# أو يدوياً:
+docker compose up -d --build
+```
+افتح **http://localhost:3000**.
+
+> أول بناء بيحمّل torch/CUDA (~عدة GB) + موديلات. لو البناء وقع بخطأ شبكة/SSL
+> (يحصل على بعض شبكات WSL2 بسبب الـ MTU)، ابنِ بالـ legacy builder:
+> ```bash
+> DOCKER_BUILDKIT=0 docker compose build && docker compose up -d
+> ```
+
+### الداتا — عشان "يشتغل زي عندك"
+qdrant بيبدأ **فاضي**. طريقتين:
+1. **بياناته هو:** يحط ملفاته في `backend/data/` ويشغّل:
+   ```bash
+   docker compose exec backend python ingest.py
+   ```
+2. **نسخة بياناتك بالظبط:** صدّر الـ volume من جهازك وحمّله عنده:
+   ```bash
+   # على جهازك:
+   docker run --rm -v rag_qdrant_data:/data -v %cd%:/backup alpine tar czf /backup/qdrant_data.tgz -C /data .
+   # عنده (بعد أول up ثم down):
+   docker run --rm -v rag_qdrant_data:/data -v %cd%:/backup alpine tar xzf /backup/qdrant_data.tgz -C /data
+   ```
+
+### (اختياري) توزيع أسرع عبر registry
+بدل ما يبني، ادفع الصور مرة واحدة وهو يسحبها:
+```bash
+docker tag rag-backend:latest <user>/rag-backend:latest && docker push <user>/rag-backend:latest
+docker tag rag-frontend:latest <user>/rag-frontend:latest && docker push <user>/rag-frontend:latest
+# ثم غيّر image: في docker-compose.yml لأسماء الـ registry
+```
+
+### أوامر مفيدة
+```bash
+docker compose logs -f backend      # اللوجز
+docker compose ps                   # حالة الخدمات
+docker compose down                 # إيقاف (الداتا في volumes تفضل)
+docker compose up -d --build        # إعادة بناء بعد تعديل كود
+```
+
+---
+
 ## مفاتيح الضبط (في [config.py](backend/config.py))
 
 | Setting | Default | امتى تغيّره |
