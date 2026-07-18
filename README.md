@@ -159,7 +159,11 @@ docker compose up -d --build
 ```
 افتح **http://localhost:3000**.
 
-> أول بناء بيحمّل torch/CUDA (~عدة GB) + موديلات. لو البناء وقع بخطأ شبكة/SSL
+> **backend يتبني محلياً، frontend يتسحب جاهز.** صورة الـ backend فيها torch+CUDA
+> (~12.5GB) — كبيرة على الرفع الموثوق لـ registry، فالبناء المحلي أضمن (الكود كله
+> على GitHub). الـ frontend صغير ومرفوع على `km16823/rag-hybrid-frontend`.
+>
+> أول بناء بيحمّل torch/CUDA + موديلات. لو البناء وقع بخطأ شبكة/SSL
 > (يحصل على بعض شبكات WSL2 بسبب الـ MTU)، ابنِ بالـ legacy builder:
 > ```bash
 > DOCKER_BUILDKIT=0 docker compose build && docker compose up -d

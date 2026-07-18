@@ -51,8 +51,8 @@ services:
 
   # ---- RAG backend (FastAPI + BGE-M3 embedder/reranker on GPU) ----
   backend:
-    image: km16823/rag-hybrid-backend:latest   # pulled from Docker Hub on other machines
-    build:                           # (or built locally with `docker compose build`)
+    image: rag-hybrid-backend:latest   # built locally — run `docker compose up -d --build`
+    build:                             # (12.5GB GPU image; too big to push reliably)
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
