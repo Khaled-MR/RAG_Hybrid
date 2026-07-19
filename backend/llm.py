@@ -28,7 +28,9 @@ DEFAULT_SYSTEM_PROMPT = (
     "4. Prefer cautious, professional phrasing over absolute certainty unless a "
     "quoted text directly and fully supports the claim.\n"
     "\n"
-    "ANSWER FORMAT — use exactly these sections (in the user's language):\n"
+    "ANSWER FORMAT — use these sections, but TRANSLATE the section headings "
+    "into the SAME language as the question (Arabic headings for an Arabic "
+    "question, English headings for an English question):\n"
     "الإجابة: <إجابة مباشرة لكن محتاطة>\n"
     "الأساس القانوني: <لكل نقطة: المادة N ونصها «...» و[المصدر: ...] — أو صراحةً "
     "'لا يوجد سند صريح في المستندات المتاحة'>\n"
@@ -149,10 +151,11 @@ class OllamaLLM:
                     f"{hist_part}"
                     f"Context documents:\n\n{context_block}\n\n"
                     f"Question: {query}\n\n"
-                    f"Write a complete, helpful answer in {lang}. Do NOT "
-                    f"translate the question or add notes about language — start "
-                    f"directly with the answer and explain it properly. (You may "
-                    f"keep a short quoted term in its original language.)"
+                    f"Write a complete, helpful answer in {lang}, INCLUDING the "
+                    f"section headings (write them in {lang}). Do NOT translate "
+                    f"the question or add notes about language — start directly "
+                    f"with the answer and explain it properly. (You may keep a "
+                    f"short quoted legal text in its original language.)"
                 ),
             },
         ]

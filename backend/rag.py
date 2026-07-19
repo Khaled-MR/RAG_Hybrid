@@ -146,13 +146,15 @@ class RAGPipeline:
         return device
 
     # Extensions we know how to read.
-    SUPPORTED_EXTENSIONS = {".pdf", ".xlsx", ".xls", ".txt", ".md", ".csv"}
+    SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".xlsx", ".xls", ".txt", ".md", ".csv"}
 
     def ingest_file(self, file_path: str) -> int:
         path = Path(file_path)
         suffix = path.suffix.lower()
         if suffix == ".pdf":
             text = self._read_pdf(path)
+        elif suffix == ".docx":
+            text = self._read_docx(path)
         elif suffix in (".xlsx", ".xls"):
             text = self._read_excel(path)
         elif suffix == ".csv":
@@ -164,6 +166,20 @@ class RAGPipeline:
             source=str(path),
             metadata={"filename": path.name},
         )
+
+    @staticmethod
+    def _read_docx(path: Path) -> str:
+        """Extract paragraphs and table cells from a .docx (Word) file."""
+        from docx import Document
+
+        doc = Document(str(path))
+        parts = [p.text for p in doc.paragraphs if p.text and p.text.strip()]
+        for table in doc.tables:
+            for row in table.rows:
+                cells = [c.text.strip() for c in row.cells if c.text and c.text.strip()]
+                if cells:
+                    parts.append(" | ".join(cells))
+        return "\n\n".join(parts)
 
     @staticmethod
     def _read_pdf(path: Path) -> str:

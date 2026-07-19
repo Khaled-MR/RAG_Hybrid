@@ -55,7 +55,7 @@ class RAGConfig:
     # under here (recursively) with no extra arguments.
     data_dir: str = str(_BACKEND_DIR / "data")
     # File types picked up automatically when ingesting a folder.
-    ingest_extensions: str = ".pdf,.xlsx,.xls,.txt,.md"
+    ingest_extensions: str = ".pdf,.docx,.xlsx,.xls,.txt,.md,.csv"
 
     initial_top_k: int = 40      # wider recall — GPU reranker handles it fast
     final_top_k: int = 6         # a bit more context for richer answers

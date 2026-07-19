@@ -1,5 +1,6 @@
 # Build context is the repo root (see docker-compose.yml).
 .git/
+.claude/
 .venv/
 **/__pycache__/
 **/*.pyc
