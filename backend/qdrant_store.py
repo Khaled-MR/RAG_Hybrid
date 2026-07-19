@@ -74,6 +74,7 @@ class QdrantStore:
                         "metadata": r["metadata"],
                         "seq": r.get("seq", -1),        # position within its file
                         "section": r.get("section", ""), # e.g. "المادة 17" (for filtering)
+                        "article_nums": r.get("article_nums", []),  # every article # in chunk
                     },
                 )
             )
@@ -88,7 +89,24 @@ class QdrantStore:
             "metadata": pl.get("metadata", "{}"),
             "seq": pl.get("seq", -1),
             "section": pl.get("section", ""),
+            "article_nums": pl.get("article_nums", []),
         }
+
+    def search_by_article(self, num: int, top_k: int = 8) -> List[Dict]:
+        """Chunks that actually mention article `num`. Ones where it's the
+        chunk's leading/primary article come first (they DEFINE the article)."""
+        try:
+            flt = models.Filter(must=[models.FieldCondition(
+                key="article_nums", match=models.MatchValue(value=num))])
+            points, _ = self.client.scroll(
+                self.collection, scroll_filter=flt, limit=64,
+                with_payload=True, with_vectors=False)
+            items = [self._payload_item(p) for p in points]
+            marker = str(num)
+            items.sort(key=lambda it: 0 if marker in (it.get("section") or "") else 1)
+            return items[:top_k]
+        except Exception:
+            return []
 
     def search_section(self, section: str, top_k: int = 5) -> List[Dict]:
         """Return chunks whose payload.section matches (exact article boost)."""

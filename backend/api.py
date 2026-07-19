@@ -147,6 +147,7 @@ def ask_stream(req: AskRequest):
             yield json.dumps({"type": "sources", "sources": sources}) + "\n"
 
             contexts = rag.format_contexts(rag._expand_with_neighbors(retrieved))
+            answer_parts = []
             for chunk in rag.llm.generate_stream(
                 query=question,                 # answer the ORIGINAL question
                 contexts=contexts,
@@ -154,7 +155,15 @@ def ask_stream(req: AskRequest):
                 max_tokens=rag.config.max_tokens,
                 history=history,
             ):
+                answer_parts.append(chunk)
                 yield json.dumps({"type": "delta", "text": chunk}) + "\n"
+
+            # Anti-hallucination gate (policy 8.5): flag cited articles not in context.
+            unverified = rag.validate_citations("".join(answer_parts), retrieved)
+            if unverified:
+                print(f"[hallucination] Q={question!r} unsupported articles={unverified}",
+                      file=sys.stderr)
+                yield json.dumps({"type": "citation_warning", "unverified_articles": unverified}) + "\n"
 
             yield json.dumps({"type": "done", "elapsed": time.time() - t0}) + "\n"
         except Exception as exc:

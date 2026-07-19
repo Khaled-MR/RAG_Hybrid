@@ -99,6 +99,7 @@ class RAGPipeline:
                 "sparse": sp,
                 "seq": i,                            # position within this file
                 "section": self._detect_section(chunk),  # e.g. "المادة 17"
+                "article_nums": self._article_numbers(chunk),  # every article # in chunk
             }
             for i, (chunk, vec, sp) in enumerate(zip(chunks, dense, sparse))
         ]
@@ -264,6 +265,29 @@ class RAGPipeline:
         m = self._ARTICLE_RE.search(query or "")
         return self._normalize_section(m.group(0)) if m else ""
 
+    # Pull EVERY article number mentioned in a text, normalized to int.
+    _ARTICLE_NUM_RE = re.compile(
+        r"(?:المادة|مادة|المـادة|Article|Art\.?)\s*\(?\s*([\d٠-٩]{1,3})",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _article_numbers(cls, text: str):
+        trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+        nums = set()
+        for m in cls._ARTICLE_NUM_RE.finditer(text or ""):
+            try:
+                nums.add(int(m.group(1).translate(trans)))
+            except ValueError:
+                pass
+        return sorted(nums)
+
+    @classmethod
+    def _query_article_num(cls, query: str):
+        """The article number the user is asking about, or None."""
+        nums = cls._article_numbers(query)
+        return nums[0] if nums else None
+
     def format_contexts(self, retrieved: List[Dict[str, Any]]) -> List[str]:
         """
         Label each passage with its source file and detected article so the LLM
@@ -276,6 +300,18 @@ class RAGPipeline:
             label = f"المصدر: {source}" + (f" - {m.group(0)}" if m else "")
             out.append(f"({label})\n{r.get('text', '')}")
         return out
+
+    def validate_citations(self, answer: str, retrieved: List[Dict[str, Any]]):
+        """Anti-hallucination gate (policy 8.5): every article number cited in the
+        answer MUST appear in the retrieved context. Returns the list of article
+        numbers cited but NOT supported by any retrieved chunk (= hallucinated)."""
+        cited = set(self._article_numbers(answer))
+        if not cited:
+            return []
+        supported = set()
+        for r in retrieved:
+            supported.update(self._article_numbers(r.get("text", "")))
+        return sorted(cited - supported)
 
     # ---------- Retrieval ----------
 
@@ -304,14 +340,17 @@ class RAGPipeline:
                       sorted(merged.values(), key=lambda x: x["score"], reverse=True)]
         candidates = candidates[: self.config.initial_top_k]
 
-        # Article boost: if the query names an article, pull it in explicitly.
+        # Article boost: if the query names an article (e.g. "المادة 38"), pull
+        # the chunks that ACTUALLY mention that number to the very top — this is
+        # what stops "ask about article 38, get article 49" retrieval errors.
+        exact_ids: set = set()
         if self.config.enable_article_filter:
-            sec = self._query_section(query)
-            if sec:
-                have = {c["id"] for c in candidates}
-                boost = [c for c in self.store.search_section(sec, top_k=5)
-                         if c["id"] not in have]
-                candidates = boost + candidates
+            num = self._query_article_num(query)
+            if num is not None:
+                exact = self.store.search_by_article(num, top_k=8)
+                if exact:
+                    exact_ids = {c["id"] for c in exact}
+                    candidates = exact + [c for c in candidates if c["id"] not in exact_ids]
 
         if not candidates:
             return []
@@ -322,7 +361,17 @@ class RAGPipeline:
             documents=[c["text"] for c in candidates],
             top_k=self.config.final_top_k,
         )
-        return [{**candidates[idx], "rerank_score": float(score)} for idx, score in reranked]
+        result = [{**candidates[idx], "rerank_score": float(score)} for idx, score in reranked]
+
+        # If the user asked for a specific article, GUARANTEE its exact chunks are
+        # in the final context (the reranker must not drop the requested article).
+        if exact_ids:
+            present = {r["id"] for r in result}
+            forced = [c for c in candidates if c["id"] in exact_ids and c["id"] not in present]
+            if forced:
+                result = forced[:2] + result           # prepend the real article
+                result = result[: self.config.final_top_k]
+        return result
 
     def _expand_with_neighbors(self, retrieved: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Add neighbouring chunks (same file, seq +/- window) for fuller context.
